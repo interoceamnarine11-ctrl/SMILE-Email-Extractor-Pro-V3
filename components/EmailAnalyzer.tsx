@@ -287,6 +287,71 @@ const EmailAnalyzer: React.FC<EmailAnalyzerProps> = ({ showToast, onSendToEmailS
     return ['All', ...list];
   }, [industryGroups]);
 
+  // Multi-Category Selection for Industry Sectors (Send all or remove unwanted)
+  const [selectedIndustryCategories, setSelectedIndustryCategories] = useState<string[]>([]);
+
+  useEffect(() => {
+    if (industryGroups.length > 0) {
+      setSelectedIndustryCategories(prev => {
+        if (prev.length === 0) {
+          return industryGroups.map(g => g.industry);
+        }
+        const valid = prev.filter(ind => industryGroups.some(g => g.industry === ind));
+        return valid.length > 0 ? valid : industryGroups.map(g => g.industry);
+      });
+    }
+  }, [industryGroups]);
+
+  const handleToggleIndustryCategory = (ind: string) => {
+    setSelectedIndustryCategories(prev =>
+      prev.includes(ind) ? prev.filter(i => i !== ind) : [...prev, ind]
+    );
+  };
+
+  const handleRemoveIndustryCategory = (ind: string) => {
+    setSelectedIndustryCategories(prev => prev.filter(i => i !== ind));
+  };
+
+  const handleSelectAllIndustries = () => {
+    setSelectedIndustryCategories(industryGroups.map(g => g.industry));
+  };
+
+  const handleClearAllIndustries = () => {
+    setSelectedIndustryCategories([]);
+  };
+
+  const selectedIndustryEmails = useMemo(() => {
+    const list: ExtractedEmail[] = [];
+    companies
+      .filter(c => selectedIndustryCategories.includes(c.industry))
+      .forEach(comp => {
+        comp.emails.forEach(email => {
+          list.push({
+            email,
+            domain: comp.domain,
+            sourceUrl: `https://${comp.domain}`,
+            companyName: comp.companyName,
+            country: comp.country || 'N/A',
+            isValid: true
+          });
+        });
+      });
+    return list;
+  }, [companies, selectedIndustryCategories]);
+
+  const handleSendSelectedIndustriesToCompose = () => {
+    if (!onSendToEmailSender) {
+      showToast("Email Sender is not connected.");
+      return;
+    }
+    if (selectedIndustryEmails.length === 0) {
+      showToast("Please select at least one sector category to send.");
+      return;
+    }
+    onSendToEmailSender(selectedIndustryEmails);
+    showToast(`Transferred ${selectedIndustryEmails.length.toLocaleString()} leads from ${selectedIndustryCategories.length} sectors to Compose!`);
+  };
+
   // Group companies and emails by Product / Service Category
   const productGroups: ProductGroupIntel[] = useMemo(() => {
     const map = new Map<string, { emails: string[]; companies: CompanyIntel[] }>();

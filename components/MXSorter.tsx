@@ -115,11 +115,71 @@ const MXSorter: React.FC<MXSorterProps> = ({ showToast, onSendToEmailSender, onN
   const [isDragging, setIsDragging] = useState(false);
   const rawFileContent = useRef<string | null>(null);
 
-  // Results Filter & Mailer Provider Compose State
+  // Results Filter & Multi-Category Email Server Compose State
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
   const [selectedComposeProvider, setSelectedComposeProvider] = useState<string>('all');
+  const [selectedComposeCategories, setSelectedComposeCategories] = useState<string[]>([]);
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
+
+  // Automatically keep selectedComposeCategories in sync with results: default to all selected
+  useEffect(() => {
+    if (results.length > 0) {
+      setSelectedComposeCategories(prev => {
+        if (prev.length === 0) {
+          return results.map(r => r.provider);
+        }
+        // Retain existing valid user selections or fallback to all
+        const valid = prev.filter(p => results.some(r => r.provider === p));
+        return valid.length > 0 ? valid : results.map(r => r.provider);
+      });
+    }
+  }, [results]);
+
+  const handleToggleCategory = (provider: string) => {
+    setSelectedComposeCategories(prev =>
+      prev.includes(provider) ? prev.filter(p => p !== provider) : [...prev, provider]
+    );
+  };
+
+  const handleRemoveCategory = (provider: string) => {
+    setSelectedComposeCategories(prev => prev.filter(p => p !== provider));
+  };
+
+  const handleSelectAllCategories = () => {
+    setSelectedComposeCategories(results.map(r => r.provider));
+  };
+
+  const handleClearAllCategories = () => {
+    setSelectedComposeCategories([]);
+  };
+
+  // Compile items from all selected categories
+  const selectedCategoriesItems = useMemo(() => {
+    if (selectedComposeCategories.length === 0) return [];
+    if (cleanConsolidatedList.length > 0) {
+      return cleanConsolidatedList.filter(item => selectedComposeCategories.includes(item.provider));
+    } else {
+      const list: { target: string; domain: string; provider: string; type: 'email' | 'domain' }[] = [];
+      results
+        .filter(g => selectedComposeCategories.includes(g.provider))
+        .forEach(g => {
+          g.emails.forEach(target => {
+            list.push({
+              target,
+              domain: target.includes('@') ? target.split('@')[1] : target,
+              provider: g.provider,
+              type: target.includes('@') ? 'email' : 'domain'
+            });
+          });
+        });
+      return list;
+    }
+  }, [cleanConsolidatedList, results, selectedComposeCategories]);
+
+  const selectedEmailsCount = useMemo(() => {
+    return selectedCategoriesItems.filter(item => item.target.includes('@')).length;
+  }, [selectedCategoriesItems]);
 
   // Auto-populate when initialTargets from another tab are passed
   useEffect(() => {
@@ -202,6 +262,57 @@ const MXSorter: React.FC<MXSorterProps> = ({ showToast, onSendToEmailSender, onN
     onNavigateTab(targetTab, emails);
     const destName = targetTab === 'validator' ? 'Email Validator' : targetTab === 'sorter' ? 'Country Sorter' : 'Composer';
     showToast(`Moved ${emails.length.toLocaleString()} ${label ? `(${label})` : ''} leads to ${destName}!`);
+  };
+
+  // Multi-Category Actions
+  const handleSendSelectedToCompose = () => {
+    if (selectedCategoriesItems.length === 0) {
+      showToast("Please select at least one email server category to send.");
+      return;
+    }
+    const label = selectedComposeCategories.length === results.length
+      ? 'All MX Categories'
+      : `${selectedComposeCategories.length} Selected Categories (${selectedComposeCategories.join(', ')})`;
+    handleSendToCompose(selectedCategoriesItems, label);
+  };
+
+  const handleTransferSelectedToTab = (tab: string) => {
+    if (selectedCategoriesItems.length === 0) {
+      showToast("Please select at least one email server category to transfer.");
+      return;
+    }
+    const targets = selectedCategoriesItems.map(i => i.target);
+    const label = selectedComposeCategories.length === results.length
+      ? 'All MX Categories'
+      : `${selectedComposeCategories.length} Categories`;
+    handleTransferToTab(tab, targets, label);
+  };
+
+  const handleExportSelectedTxt = () => {
+    if (selectedCategoriesItems.length === 0) {
+      showToast("No email server categories selected to export.");
+      return;
+    }
+    const emails = selectedCategoriesItems.filter(i => i.target.includes('@')).map(i => i.target);
+    const dateStr = new Date().toISOString().split('T')[0];
+    const blob = new Blob([emails.join('\n')], { type: 'text/plain;charset=utf-8;' });
+    triggerBrowserDownload(blob, `MX_Selected_Categories_${dateStr}.txt`);
+    showToast(`Exported ${emails.length.toLocaleString()} emails from ${selectedComposeCategories.length} categories.`);
+  };
+
+  const handleExportSelectedCsv = () => {
+    if (selectedCategoriesItems.length === 0) {
+      showToast("No email server categories selected to export.");
+      return;
+    }
+    const dateStr = new Date().toISOString().split('T')[0];
+    const header = "Target,Domain,MX_Provider,Type\n";
+    const rows = selectedCategoriesItems.map(i => 
+      `"${i.target.replace(/"/g, '""')}","${i.domain.replace(/"/g, '""')}","${i.provider.replace(/"/g, '""')}","${i.type}"`
+    ).join("\n");
+    const blob = new Blob([header + rows], { type: 'text/csv;charset=utf-8;' });
+    triggerBrowserDownload(blob, `MX_Selected_Categories_${dateStr}.csv`);
+    showToast(`Exported ${selectedCategoriesItems.length.toLocaleString()} items to CSV.`);
   };
 
   // Keep screen awake while resolving MX DNS queries, sorting, or streaming folder extraction
@@ -1419,56 +1530,59 @@ const MXSorter: React.FC<MXSorterProps> = ({ showToast, onSendToEmailSender, onN
             </div>
           </div>
 
-          {/* SELECT EMAIL SERVER PROVIDER & SEND TO COMPOSE / CROSS-TAB ACTIONS BANNER */}
+          {/* MULTI-CATEGORY SELECTION & SEND TO COMPOSE / CROSS-TAB HUB */}
           {(cleanConsolidatedList.length > 0 || results.length > 0) && (
-            <div className="p-3.5 bg-gradient-to-r from-blue-950/80 via-indigo-950/70 to-slate-900 border-b border-blue-900/50 space-y-2.5">
+            <div className="p-3.5 bg-gradient-to-r from-blue-950/90 via-indigo-950/80 to-slate-900 border-b border-blue-900/60 space-y-3">
+              {/* TOP ROW: TITLE, SELECTION SUMMARY & ACTION BUTTONS */}
               <div className="flex flex-wrap items-center justify-between gap-3">
-                <div className="flex items-center gap-2 flex-wrap">
+                <div className="flex items-center gap-2.5 flex-wrap">
                   <span className="text-xs font-bold text-blue-300 flex items-center gap-1.5">
                     <Send className="w-3.5 h-3.5 text-blue-400" />
-                    Select Email Server Provider:
+                    Mail Server Categories to Send:
                   </span>
-                  <select
-                    value={selectedComposeProvider}
-                    onChange={(e) => setSelectedComposeProvider(e.target.value)}
-                    className="bg-slate-900 border border-blue-500/60 rounded-lg text-xs font-bold text-blue-200 px-3 py-1.5 focus:outline-none focus:ring-1 focus:ring-blue-400"
-                  >
-                    <option value="all">⭐ All Clean Business Leads ({cleanConsolidatedList.filter(c => c.target.includes('@')).length.toLocaleString()})</option>
-                    {results.map(g => {
-                      const count = g.emails.filter(e => e.includes('@')).length;
-                      return (
-                        <option key={g.provider} value={g.provider}>
-                          {g.provider} ({count.toLocaleString()} leads)
-                        </option>
-                      );
-                    })}
-                  </select>
+                  <span className="text-xs px-2.5 py-1 rounded-full font-bold bg-blue-900/60 border border-blue-500/40 text-blue-200">
+                    {selectedComposeCategories.length === results.length && results.length > 0 ? (
+                      <span>⭐ All {results.length} Categories ({selectedEmailsCount.toLocaleString()} leads)</span>
+                    ) : selectedComposeCategories.length > 0 ? (
+                      <span>{selectedComposeCategories.length} of {results.length} Categories ({selectedEmailsCount.toLocaleString()} leads)</span>
+                    ) : (
+                      <span className="text-amber-300">⚠️ No categories selected</span>
+                    )}
+                  </span>
+
+                  {/* Bulk Selection Buttons */}
+                  <div className="flex items-center gap-1 text-xs">
+                    <button
+                      type="button"
+                      onClick={handleSelectAllCategories}
+                      className="px-2 py-0.5 rounded bg-blue-900/50 hover:bg-blue-800 text-blue-300 hover:text-white border border-blue-700/50 font-medium transition text-[11px]"
+                      title="Select all categories to send"
+                    >
+                      Select All
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleClearAllCategories}
+                      className="px-2 py-0.5 rounded bg-gray-800 hover:bg-gray-700 text-gray-400 hover:text-white border border-gray-700 font-medium transition text-[11px]"
+                      title="Deselect all categories"
+                    >
+                      Clear All
+                    </button>
+                  </div>
                 </div>
 
-                {/* Primary Action Buttons */}
+                {/* Primary Actions for Selected Categories */}
                 <div className="flex items-center gap-2 flex-wrap">
                   {onSendToEmailSender && (
                     <button
                       type="button"
-                      onClick={() => {
-                        if (selectedComposeProvider === 'all') {
-                          handleSendToCompose(cleanConsolidatedList, 'All Clean Providers');
-                        } else {
-                          const grp = results.find(g => g.provider === selectedComposeProvider);
-                          if (grp) {
-                            handleSendToCompose(grp.emails, grp.provider);
-                          }
-                        }
-                      }}
-                      className="flex items-center px-3.5 py-1.5 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white rounded-lg text-xs font-bold transition-all shadow-md hover:shadow-blue-600/30 border border-blue-400/60"
-                      title="Send selected provider leads to Email Compose (Email Sender)"
+                      onClick={handleSendSelectedToCompose}
+                      disabled={selectedCategoriesItems.length === 0}
+                      className="flex items-center px-3.5 py-1.5 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed text-white rounded-lg text-xs font-bold transition-all shadow-md hover:shadow-blue-600/30 border border-blue-400/60"
+                      title="Send all leads from selected categories to Email Compose (Email Sender)"
                     >
                       <Send className="w-3.5 h-3.5 mr-1.5" />
-                      <span>Send to Compose ({
-                        selectedComposeProvider === 'all'
-                          ? cleanConsolidatedList.filter(c => c.target.includes('@')).length.toLocaleString()
-                          : (results.find(g => g.provider === selectedComposeProvider)?.emails.filter(e => e.includes('@')).length || 0).toLocaleString()
-                      })</span>
+                      <span>Send Selected to Compose ({selectedEmailsCount.toLocaleString()})</span>
                     </button>
                   )}
 
@@ -1476,14 +1590,10 @@ const MXSorter: React.FC<MXSorterProps> = ({ showToast, onSendToEmailSender, onN
                     <>
                       <button
                         type="button"
-                        onClick={() => {
-                          const targets = selectedComposeProvider === 'all'
-                            ? cleanConsolidatedList.map(c => c.target)
-                            : (results.find(g => g.provider === selectedComposeProvider)?.emails || []);
-                          handleTransferToTab('validator', targets, selectedComposeProvider);
-                        }}
-                        className="flex items-center px-3 py-1.5 bg-emerald-950/70 hover:bg-emerald-800 text-emerald-300 hover:text-white rounded-lg text-xs font-bold transition border border-emerald-600/50"
-                        title="Transfer leads to Sorter & Validator tab"
+                        onClick={() => handleTransferSelectedToTab('validator')}
+                        disabled={selectedCategoriesItems.length === 0}
+                        className="flex items-center px-3 py-1.5 bg-emerald-950/70 hover:bg-emerald-800 disabled:opacity-40 text-emerald-300 hover:text-white rounded-lg text-xs font-bold transition border border-emerald-600/50"
+                        title="Transfer selected categories to Sorter & Validator tab"
                       >
                         <CheckIcon className="w-3.5 h-3.5 mr-1 text-emerald-400" />
                         <span>To Validator</span>
@@ -1491,52 +1601,80 @@ const MXSorter: React.FC<MXSorterProps> = ({ showToast, onSendToEmailSender, onN
 
                       <button
                         type="button"
-                        onClick={() => {
-                          const targets = selectedComposeProvider === 'all'
-                            ? cleanConsolidatedList.map(c => c.target)
-                            : (results.find(g => g.provider === selectedComposeProvider)?.emails || []);
-                          handleTransferToTab('sorter', targets, selectedComposeProvider);
-                        }}
-                        className="flex items-center px-3 py-1.5 bg-purple-950/70 hover:bg-purple-800 text-purple-300 hover:text-white rounded-lg text-xs font-bold transition border border-purple-600/50"
-                        title="Transfer leads to Country Sorter tab"
+                        onClick={() => handleTransferSelectedToTab('sorter')}
+                        disabled={selectedCategoriesItems.length === 0}
+                        className="flex items-center px-3 py-1.5 bg-purple-950/70 hover:bg-purple-800 disabled:opacity-40 text-purple-300 hover:text-white rounded-lg text-xs font-bold transition border border-purple-600/50"
+                        title="Transfer selected categories to Country Sorter tab"
                       >
                         <GlobeAltIcon className="w-3.5 h-3.5 mr-1 text-purple-400" />
                         <span>To Country Sort</span>
                       </button>
                     </>
                   )}
+
+                  <button
+                    type="button"
+                    onClick={handleExportSelectedTxt}
+                    disabled={selectedCategoriesItems.length === 0}
+                    className="px-2.5 py-1.5 bg-gray-800 hover:bg-gray-700 disabled:opacity-40 text-gray-300 hover:text-white rounded-lg text-xs font-medium border border-gray-700 transition"
+                    title="Export selected categories as .txt"
+                  >
+                    .TXT
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleExportSelectedCsv}
+                    disabled={selectedCategoriesItems.length === 0}
+                    className="px-2.5 py-1.5 bg-gray-800 hover:bg-gray-700 disabled:opacity-40 text-gray-300 hover:text-white rounded-lg text-xs font-medium border border-gray-700 transition"
+                    title="Export selected categories as CSV"
+                  >
+                    CSV
+                  </button>
                 </div>
               </div>
 
-              {/* Quick Clickable Provider Chips */}
-              <div className="flex items-center gap-1.5 overflow-x-auto custom-scrollbar pt-1 pb-0.5">
-                <span className="text-[11px] text-gray-400 shrink-0 mr-1">Quick Select:</span>
-                <button
-                  type="button"
-                  onClick={() => setSelectedComposeProvider('all')}
-                  className={`text-[11px] px-2.5 py-0.5 rounded-full font-bold transition shrink-0 border ${
-                    selectedComposeProvider === 'all'
-                      ? 'bg-blue-600 text-white border-blue-400 shadow-sm'
-                      : 'bg-gray-900/80 text-gray-300 hover:text-white border-gray-700'
-                  }`}
-                >
-                  ⭐ All Clean ({cleanConsolidatedList.filter(c => c.target.includes('@')).length})
-                </button>
-                {results.slice(0, 8).map(g => {
+              {/* INTERACTIVE CATEGORY PILLS WITH INLINE REMOVAL & RE-ADDING */}
+              <div className="flex flex-wrap items-center gap-1.5 pt-1 border-t border-blue-900/40">
+                <span className="text-[11px] text-gray-400 shrink-0 mr-1 font-medium">Categories:</span>
+                {results.map(g => {
                   const count = g.emails.filter(e => e.includes('@')).length;
+                  const isSelected = selectedComposeCategories.includes(g.provider);
                   return (
-                    <button
+                    <div
                       key={g.provider}
-                      type="button"
-                      onClick={() => setSelectedComposeProvider(g.provider)}
-                      className={`text-[11px] px-2.5 py-0.5 rounded-full font-bold transition shrink-0 border ${
-                        selectedComposeProvider === g.provider
-                          ? 'bg-blue-600 text-white border-blue-400 shadow-sm'
-                          : 'bg-gray-900/80 text-gray-300 hover:text-white border-gray-700'
+                      className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold transition-all ${
+                        isSelected
+                          ? 'bg-blue-600/90 text-white border border-blue-400 shadow-sm'
+                          : 'bg-gray-900/80 text-gray-400 hover:text-gray-200 border border-dashed border-gray-700'
                       }`}
                     >
-                      {g.provider} ({count})
-                    </button>
+                      <button
+                        type="button"
+                        onClick={() => handleToggleCategory(g.provider)}
+                        className="flex items-center gap-1.5 text-left focus:outline-none"
+                        title={isSelected ? `Click to deselect ${g.provider}` : `Click to include ${g.provider}`}
+                      >
+                        <span>{isSelected ? '✓' : '+'}</span>
+                        <span>{g.provider}</span>
+                        <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-mono ${isSelected ? 'bg-blue-800 text-blue-200' : 'bg-gray-800 text-gray-400'}`}>
+                          {count.toLocaleString()}
+                        </span>
+                      </button>
+                      {isSelected && (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleRemoveCategory(g.provider);
+                          }}
+                          className="hover:bg-blue-700/80 rounded p-0.5 text-blue-200 hover:text-white transition ml-0.5 leading-none"
+                          title={`Remove ${g.provider} from send queue`}
+                        >
+                          ✕
+                        </button>
+                      )}
+                    </div>
                   );
                 })}
               </div>
@@ -1913,15 +2051,23 @@ const MXSorter: React.FC<MXSorterProps> = ({ showToast, onSendToEmailSender, onN
                           <div className="flex justify-between items-start mb-2.5 pb-2 border-b border-gray-700/50">
                             <div>
                               <div className="flex items-center gap-2">
-                                <span className={`text-sm font-bold ${color.text}`}>
-                                  {group.provider}
-                                </span>
+                                <label className="inline-flex items-center gap-1.5 cursor-pointer">
+                                  <input
+                                    type="checkbox"
+                                    checked={selectedComposeCategories.includes(group.provider)}
+                                    onChange={() => handleToggleCategory(group.provider)}
+                                    className="rounded border-gray-600 bg-gray-900 text-blue-500 focus:ring-0 w-3.5 h-3.5"
+                                  />
+                                  <span className={`text-sm font-bold ${color.text}`}>
+                                    {group.provider}
+                                  </span>
+                                </label>
                                 <span className={`text-[11px] px-2 py-0.5 rounded-full font-mono font-bold ${color.badge}`}>
                                   {group.emails.length.toLocaleString()}
                                 </span>
                               </div>
                               <span className="text-[10px] text-gray-400">
-                                {((group.emails.length / totalResultsCount) * 100).toFixed(1)}% of targets
+                                {((group.emails.length / totalResultsCount) * 100).toFixed(1)}% of targets • {selectedComposeCategories.includes(group.provider) ? '✓ Included in queue' : 'Removed from queue'}
                               </span>
                             </div>
 

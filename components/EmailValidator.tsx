@@ -706,6 +706,101 @@ const EmailValidator: React.FC<EmailValidatorProps> = ({ showToast, initialEmail
     ];
   }, [verifiedEmails]);
 
+  // Multi-Category Selection for Deliverability Folders (Send all or remove unwanted)
+  const DEFAULT_SELECTED_FOLDERS = ['deliverable-biz', 'public-webmail', 'role-accounts', 'gov-edu', 'financial'];
+  const [selectedFolderCategories, setSelectedFolderCategories] = useState<string[]>(DEFAULT_SELECTED_FOLDERS);
+
+  const handleToggleFolderCategory = (id: string) => {
+    setSelectedFolderCategories(prev =>
+      prev.includes(id) ? prev.filter(f => f !== id) : [...prev, id]
+    );
+  };
+
+  const handleRemoveFolderCategory = (id: string) => {
+    setSelectedFolderCategories(prev => prev.filter(f => f !== id));
+  };
+
+  const handleSelectAllFolders = () => {
+    setSelectedFolderCategories(featureFolders.map(f => f.id));
+  };
+
+  const handleSelectDeliverableOnly = () => {
+    setSelectedFolderCategories(['deliverable-biz', 'gov-edu', 'financial', 'role-accounts']);
+  };
+
+  const handleClearAllFolders = () => {
+    setSelectedFolderCategories([]);
+  };
+
+  // Gather unique emails from selected folders
+  const selectedFolderEmails = useMemo(() => {
+    const map = new Map<string, ValidationResult>();
+    featureFolders
+      .filter(f => selectedFolderCategories.includes(f.id))
+      .forEach(f => {
+        f.emails.forEach(item => {
+          if (!map.has(item.email.toLowerCase())) {
+            map.set(item.email.toLowerCase(), item);
+          }
+        });
+      });
+    return Array.from(map.values());
+  }, [featureFolders, selectedFolderCategories]);
+
+  const handleSendSelectedFoldersToCompose = () => {
+    if (!onSendToEmailSender) {
+      showToast("Email Sender is not connected.");
+      return;
+    }
+    if (selectedFolderEmails.length === 0) {
+      showToast("Please select at least one folder category with emails to send.");
+      return;
+    }
+    const leads: ExtractedEmail[] = selectedFolderEmails.map(v => {
+      const parsed = extractEmailsFromText(v.email);
+      return parsed[0] || {
+        email: v.email,
+        domain: v.domain,
+        sourceUrl: `https://${v.domain}`,
+        isValid: true,
+        companyName: v.domain.split('.')[0]?.toUpperCase(),
+        country: 'N/A'
+      };
+    });
+    onSendToEmailSender(leads);
+    showToast(`Transferred ${leads.length.toLocaleString()} leads from ${selectedFolderCategories.length} categories to Compose!`);
+  };
+
+  const handleTransferSelectedFoldersToTab = (tab: string) => {
+    if (!onNavigateTab) {
+      showToast("Tab navigation is not available.");
+      return;
+    }
+    if (selectedFolderEmails.length === 0) {
+      showToast("Please select at least one category to transfer.");
+      return;
+    }
+    const emails = selectedFolderEmails.map(v => v.email);
+    onNavigateTab(tab, emails);
+    const destName = tab === 'mx-sorter' ? 'MX Sorter' : 'Country Sorter';
+    showToast(`Moved ${emails.length.toLocaleString()} leads from ${selectedFolderCategories.length} categories to ${destName}!`);
+  };
+
+  const handleExportSelectedFoldersTxt = () => {
+    if (selectedFolderEmails.length === 0) {
+      showToast("No emails in selected categories to export.");
+      return;
+    }
+    const text = selectedFolderEmails.map(item => item.email).join('\n');
+    const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `Selected_Categories_${selectedFolderCategories.length}_${new Date().getTime()}.txt`;
+    a.click();
+    showToast(`Exported ${selectedFolderEmails.length.toLocaleString()} emails from ${selectedFolderCategories.length} categories.`);
+  };
+
   // Copy Clean Verified List
   const handleCopyCleanList = () => {
     if (cleanVerifiedList.length === 0) {
@@ -1225,6 +1320,149 @@ const EmailValidator: React.FC<EmailValidatorProps> = ({ showToast, initialEmail
                 </div>
               ) : (
                 <div className="space-y-4">
+                  {/* MULTI-CATEGORY SELECTION BAR FOR DELIVERABILITY FOLDERS */}
+                  <div className="p-3 bg-gradient-to-r from-blue-950/80 via-slate-900 to-indigo-950/70 border border-blue-900/40 rounded-xl space-y-2.5">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-xs font-bold text-blue-300 flex items-center gap-1.5">
+                          <Send className="w-3.5 h-3.5 text-blue-400" />
+                          Deliverability Categories to Send:
+                        </span>
+                        <span className="text-xs px-2.5 py-0.5 rounded-full font-bold bg-blue-900/60 border border-blue-500/40 text-blue-200">
+                          {selectedFolderCategories.length === featureFolders.length ? (
+                            <span>⭐ All {featureFolders.length} Folders ({selectedFolderEmails.length.toLocaleString()} leads)</span>
+                          ) : selectedFolderCategories.length > 0 ? (
+                            <span>{selectedFolderCategories.length} of {featureFolders.length} Folders ({selectedFolderEmails.length.toLocaleString()} leads)</span>
+                          ) : (
+                            <span className="text-amber-300">⚠️ No categories selected</span>
+                          )}
+                        </span>
+
+                        {/* Bulk Action Buttons */}
+                        <div className="flex items-center gap-1 text-xs">
+                          <button
+                            type="button"
+                            onClick={handleSelectAllFolders}
+                            className="px-2 py-0.5 rounded bg-blue-900/50 hover:bg-blue-800 text-blue-300 hover:text-white border border-blue-700/50 font-medium transition text-[11px]"
+                            title="Select all folders"
+                          >
+                            Select All
+                          </button>
+                          <button
+                            type="button"
+                            onClick={handleSelectDeliverableOnly}
+                            className="px-2 py-0.5 rounded bg-emerald-950 hover:bg-emerald-900 text-emerald-300 hover:text-white border border-emerald-700/50 font-medium transition text-[11px]"
+                            title="Select only verified deliverable & safe corporate categories"
+                          >
+                            Safe Only
+                          </button>
+                          <button
+                            type="button"
+                            onClick={handleClearAllFolders}
+                            className="px-2 py-0.5 rounded bg-gray-800 hover:bg-gray-700 text-gray-400 hover:text-white border border-gray-700 font-medium transition text-[11px]"
+                            title="Deselect all folders"
+                          >
+                            Clear All
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Primary Actions for Selected Folders */}
+                      <div className="flex items-center gap-2 flex-wrap">
+                        {onSendToEmailSender && (
+                          <button
+                            type="button"
+                            onClick={handleSendSelectedFoldersToCompose}
+                            disabled={selectedFolderEmails.length === 0}
+                            className="flex items-center px-3 py-1.5 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed text-white rounded-lg text-xs font-bold transition shadow border border-blue-400/60"
+                            title="Transfer all emails from selected categories directly to Email Sender"
+                          >
+                            <Send className="w-3.5 h-3.5 mr-1.5" />
+                            <span>Send Selected to Compose ({selectedFolderEmails.length.toLocaleString()})</span>
+                          </button>
+                        )}
+
+                        {onNavigateTab && (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => handleTransferSelectedFoldersToTab('mx-sorter')}
+                              disabled={selectedFolderEmails.length === 0}
+                              className="flex items-center px-2.5 py-1.5 bg-indigo-900/70 hover:bg-indigo-800 disabled:opacity-40 text-indigo-200 border border-indigo-600/50 rounded-lg text-xs font-bold transition shadow-sm"
+                              title="Send selected categories to MX Mailer Sorter"
+                            >
+                              <span>To MX Sorter</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleTransferSelectedFoldersToTab('sorter')}
+                              disabled={selectedFolderEmails.length === 0}
+                              className="flex items-center px-2.5 py-1.5 bg-purple-950/70 hover:bg-purple-800 disabled:opacity-40 text-purple-200 border border-purple-600/50 rounded-lg text-xs font-bold transition shadow-sm"
+                              title="Send selected categories to Country Sorter"
+                            >
+                              <span>To Country Sort</span>
+                            </button>
+                          </>
+                        )}
+
+                        <button
+                          type="button"
+                          onClick={handleExportSelectedFoldersTxt}
+                          disabled={selectedFolderEmails.length === 0}
+                          className="px-2.5 py-1.5 bg-gray-800 hover:bg-gray-700 disabled:opacity-40 text-gray-300 hover:text-white rounded-lg text-xs font-medium border border-gray-700 transition"
+                          title="Export selected categories as .txt"
+                        >
+                          .TXT
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Interactive Category Pills with Remove / Toggle */}
+                    <div className="flex flex-wrap items-center gap-1.5 pt-1 border-t border-blue-900/40">
+                      <span className="text-[11px] text-gray-400 shrink-0 mr-1 font-medium">Categories:</span>
+                      {featureFolders.map(folder => {
+                        const isSelected = selectedFolderCategories.includes(folder.id);
+                        return (
+                          <div
+                            key={folder.id}
+                            className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-xs font-semibold transition-all ${
+                              isSelected
+                                ? 'bg-blue-600/90 text-white border border-blue-400 shadow-sm'
+                                : 'bg-gray-900/80 text-gray-400 hover:text-gray-200 border border-dashed border-gray-700'
+                            }`}
+                          >
+                            <button
+                              type="button"
+                              onClick={() => handleToggleFolderCategory(folder.id)}
+                              className="flex items-center gap-1 text-left focus:outline-none"
+                              title={isSelected ? `Click to deselect ${folder.name}` : `Click to include ${folder.name}`}
+                            >
+                              <span>{isSelected ? '✓' : '+'}</span>
+                              <span>{folder.icon}</span>
+                              <span className="truncate max-w-[130px]">{folder.name}</span>
+                              <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-mono ${isSelected ? 'bg-blue-800 text-blue-200' : 'bg-gray-800 text-gray-400'}`}>
+                                {folder.emails.length.toLocaleString()}
+                              </span>
+                            </button>
+                            {isSelected && (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleRemoveFolderCategory(folder.id);
+                                }}
+                                className="hover:bg-blue-700/80 rounded p-0.5 text-blue-200 hover:text-white transition ml-0.5 leading-none"
+                                title={`Remove ${folder.name} from send queue`}
+                              >
+                                ✕
+                              </button>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     {featureFolders.map(folder => {
                       const hasEmails = folder.emails.length > 0;
@@ -1242,9 +1480,19 @@ const EmailValidator: React.FC<EmailValidatorProps> = ({ showToast, initialEmail
                             <div className="min-w-0">
                               <div className="flex items-center gap-2">
                                 <span className="text-xl">{folder.icon}</span>
-                                <h3 className="font-bold text-white text-sm truncate">{folder.name}</h3>
+                                <label className="inline-flex items-center gap-1.5 cursor-pointer min-w-0">
+                                  <input
+                                    type="checkbox"
+                                    checked={selectedFolderCategories.includes(folder.id)}
+                                    onChange={() => handleToggleFolderCategory(folder.id)}
+                                    className="rounded border-gray-600 bg-gray-900 text-blue-500 focus:ring-0 w-3.5 h-3.5"
+                                  />
+                                  <h3 className="font-bold text-white text-sm truncate">{folder.name}</h3>
+                                </label>
                               </div>
-                              <p className="text-[11px] text-gray-400 mt-0.5 line-clamp-1">{folder.description}</p>
+                              <p className="text-[11px] text-gray-400 mt-0.5 line-clamp-1">
+                                {folder.description} • {selectedFolderCategories.includes(folder.id) ? '✓ In Queue' : 'Excluded from queue'}
+                              </p>
                             </div>
                             
                             <div className="flex flex-col items-end shrink-0 gap-1">

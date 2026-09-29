@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { identifyCountriesForDomains, identifyUnknownDomainsDeeply, type CountryResolutionItem } from '../services/geminiService';
 import { classifyCountryOffline } from '../services/offlineClassifier';
 import { extractEmailsFromFile } from '../services/fileService';
@@ -73,6 +73,102 @@ const EmailSorter: React.FC<EmailSorterProps> = ({ showToast, onSendToEmailSende
   const folderInputRef = useRef<HTMLInputElement>(null);
   const rawFileContent = useRef<string | null>(null);
   const controlRef = useRef({ shouldStop: false, isPaused: false });
+
+  // Multi-Category Selection for Country Categories (Send all or remove unwanted)
+  const [selectedCountryCategories, setSelectedCountryCategories] = useState<string[]>([]);
+
+  useEffect(() => {
+    if (sortedResults.length > 0) {
+      setSelectedCountryCategories(prev => {
+        if (prev.length === 0) {
+          return sortedResults.map(g => g.country);
+        }
+        const valid = prev.filter(c => sortedResults.some(g => g.country === c));
+        return valid.length > 0 ? valid : sortedResults.map(g => g.country);
+      });
+    }
+  }, [sortedResults]);
+
+  const handleToggleCountryCategory = (country: string) => {
+    setSelectedCountryCategories(prev =>
+      prev.includes(country) ? prev.filter(c => c !== country) : [...prev, country]
+    );
+  };
+
+  const handleRemoveCountryCategory = (country: string) => {
+    setSelectedCountryCategories(prev => prev.filter(c => c !== country));
+  };
+
+  const handleSelectAllCountryCategories = () => {
+    setSelectedCountryCategories(sortedResults.map(g => g.country));
+  };
+
+  const handleClearAllCountryCategories = () => {
+    setSelectedCountryCategories([]);
+  };
+
+  const selectedCountryGroups = useMemo(() => {
+    return sortedResults.filter(g => selectedCountryCategories.includes(g.country));
+  }, [sortedResults, selectedCountryCategories]);
+
+  const selectedCountryEmailsCount = useMemo(() => {
+    return selectedCountryGroups.reduce((acc, g) => acc + g.emails.length, 0);
+  }, [selectedCountryGroups]);
+
+  const handleSendSelectedCountriesToCompose = () => {
+    if (!onSendToEmailSender) {
+      showToast("Email Sender is not connected.");
+      return;
+    }
+    if (selectedCountryGroups.length === 0) {
+      showToast("Please select at least one country category to send.");
+      return;
+    }
+    const allLeads: ExtractedEmail[] = [];
+    selectedCountryGroups.forEach(group => {
+      group.emails.forEach(email => {
+        const parsed = extractEmailsFromText(email, group.country);
+        if (parsed.length > 0) {
+          allLeads.push(parsed[0]);
+        }
+      });
+    });
+    if (allLeads.length === 0) {
+      showToast("No valid clean emails in selected categories to transfer.");
+      return;
+    }
+    onSendToEmailSender(allLeads);
+    showToast(`Transferred ${allLeads.length.toLocaleString()} leads from ${selectedCountryCategories.length} countries to Compose!`);
+  };
+
+  const handleTransferSelectedCountriesToTab = (tab: string) => {
+    if (!onNavigateTab) {
+      showToast("Tab navigation not available.");
+      return;
+    }
+    if (selectedCountryGroups.length === 0) {
+      showToast("Please select at least one country category to transfer.");
+      return;
+    }
+    const emails: string[] = [];
+    selectedCountryGroups.forEach(g => emails.push(...g.emails));
+    onNavigateTab(tab, emails);
+    const destName = tab === 'mx-sorter' ? 'MX Sorter' : 'Email Validator';
+    showToast(`Moved ${emails.length.toLocaleString()} leads from ${selectedCountryCategories.length} countries to ${destName}!`);
+  };
+
+  const handleExportSelectedCountriesTxt = () => {
+    if (selectedCountryGroups.length === 0) {
+      showToast("No country categories selected to export.");
+      return;
+    }
+    const emails: string[] = [];
+    selectedCountryGroups.forEach(g => emails.push(...g.emails));
+    const dateStr = new Date().toISOString().split('T')[0];
+    const blob = new Blob([emails.join('\n')], { type: 'text/plain;charset=utf-8;' });
+    downloadBlob(blob, `Country_Selected_${selectedCountryCategories.length}_Categories_${dateStr}.txt`);
+    showToast(`Exported ${emails.length.toLocaleString()} emails from ${selectedCountryCategories.length} countries.`);
+  };
 
   // Auto-populate when initialEmails from another tab are passed
   useEffect(() => {
@@ -984,6 +1080,144 @@ const EmailSorter: React.FC<EmailSorterProps> = ({ showToast, onSendToEmailSende
               </div>
             )}
 
+            {/* MULTI-CATEGORY SELECTION BAR FOR SORTED COUNTRIES */}
+            {sortedResults.length > 0 && (
+              <div className="p-3 bg-gradient-to-r from-blue-950/80 via-slate-900 to-indigo-950/70 border-b border-blue-900/40 space-y-2.5">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-xs font-bold text-blue-300 flex items-center gap-1.5">
+                      <Send className="w-3.5 h-3.5 text-blue-400" />
+                      Country Categories to Send:
+                    </span>
+                    <span className="text-xs px-2.5 py-0.5 rounded-full font-bold bg-blue-900/60 border border-blue-500/40 text-blue-200">
+                      {selectedCountryCategories.length === sortedResults.length ? (
+                        <span>⭐ All {sortedResults.length} Countries ({selectedCountryEmailsCount.toLocaleString()} leads)</span>
+                      ) : selectedCountryCategories.length > 0 ? (
+                        <span>{selectedCountryCategories.length} of {sortedResults.length} Countries ({selectedCountryEmailsCount.toLocaleString()} leads)</span>
+                      ) : (
+                        <span className="text-amber-300">⚠️ No categories selected</span>
+                      )}
+                    </span>
+
+                    {/* Bulk Selection Buttons */}
+                    <div className="flex items-center gap-1 text-xs">
+                      <button
+                        type="button"
+                        onClick={handleSelectAllCountryCategories}
+                        className="px-2 py-0.5 rounded bg-blue-900/50 hover:bg-blue-800 text-blue-300 hover:text-white border border-blue-700/50 font-medium transition text-[11px]"
+                        title="Select all country categories"
+                      >
+                        Select All
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleClearAllCountryCategories}
+                        className="px-2 py-0.5 rounded bg-gray-800 hover:bg-gray-700 text-gray-400 hover:text-white border border-gray-700 font-medium transition text-[11px]"
+                        title="Deselect all countries"
+                      >
+                        Clear All
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Primary Action Buttons for Selected Countries */}
+                  <div className="flex items-center gap-2 flex-wrap">
+                    {onSendToEmailSender && (
+                      <button
+                        type="button"
+                        onClick={handleSendSelectedCountriesToCompose}
+                        disabled={selectedCountryGroups.length === 0}
+                        className="flex items-center px-3 py-1.5 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed text-white rounded-lg text-xs font-bold transition shadow border border-blue-400/60"
+                        title="Transfer leads from selected country categories directly to Email Sender"
+                      >
+                        <Send className="w-3.5 h-3.5 mr-1.5" />
+                        <span>Send Selected to Compose ({selectedCountryEmailsCount.toLocaleString()})</span>
+                      </button>
+                    )}
+
+                    {onNavigateTab && (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => handleTransferSelectedCountriesToTab('mx-sorter')}
+                          disabled={selectedCountryGroups.length === 0}
+                          className="flex items-center px-2.5 py-1.5 bg-indigo-900/70 hover:bg-indigo-800 disabled:opacity-40 text-indigo-200 border border-indigo-600/50 rounded-lg text-xs font-bold transition shadow-sm"
+                          title="Send selected categories to MX Mailer Sorter"
+                        >
+                          <span>To MX Sorter</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleTransferSelectedCountriesToTab('validator')}
+                          disabled={selectedCountryGroups.length === 0}
+                          className="flex items-center px-2.5 py-1.5 bg-emerald-950/70 hover:bg-emerald-800 disabled:opacity-40 text-emerald-200 border border-emerald-600/50 rounded-lg text-xs font-bold transition shadow-sm"
+                          title="Send selected categories to Email Validator"
+                        >
+                          <ShieldCheckIcon className="w-3.5 h-3.5 mr-1 text-emerald-400" />
+                          <span>To Validator</span>
+                        </button>
+                      </>
+                    )}
+
+                    <button
+                      type="button"
+                      onClick={handleExportSelectedCountriesTxt}
+                      disabled={selectedCountryGroups.length === 0}
+                      className="px-2.5 py-1.5 bg-gray-800 hover:bg-gray-700 disabled:opacity-40 text-gray-300 hover:text-white rounded-lg text-xs font-medium border border-gray-700 transition"
+                      title="Export selected country categories as .txt"
+                    >
+                      .TXT
+                    </button>
+                  </div>
+                </div>
+
+                {/* Country Category Pills with Remove / Toggle */}
+                <div className="flex flex-wrap items-center gap-1.5 pt-1 border-t border-blue-900/40">
+                  <span className="text-[11px] text-gray-400 shrink-0 mr-1 font-medium">Countries:</span>
+                  {sortedResults.map(group => {
+                    const isSelected = selectedCountryCategories.includes(group.country);
+                    return (
+                      <div
+                        key={group.country}
+                        className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-xs font-semibold transition-all ${
+                          isSelected
+                            ? 'bg-blue-600/90 text-white border border-blue-400 shadow-sm'
+                            : 'bg-gray-900/80 text-gray-400 hover:text-gray-200 border border-dashed border-gray-700'
+                        }`}
+                      >
+                        <button
+                          type="button"
+                          onClick={() => handleToggleCountryCategory(group.country)}
+                          className="flex items-center gap-1 text-left focus:outline-none"
+                          title={isSelected ? `Click to deselect ${group.country}` : `Click to include ${group.country}`}
+                        >
+                          <span>{isSelected ? '✓' : '+'}</span>
+                          <span>{getCountryFlag(group.country)}</span>
+                          <span>{group.country}</span>
+                          <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-mono ${isSelected ? 'bg-blue-800 text-blue-200' : 'bg-gray-800 text-gray-400'}`}>
+                            {group.emails.length.toLocaleString()}
+                          </span>
+                        </button>
+                        {isSelected && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleRemoveCountryCategory(group.country);
+                            }}
+                            className="hover:bg-blue-700/80 rounded p-0.5 text-blue-200 hover:text-white transition ml-0.5 leading-none"
+                            title={`Remove ${group.country} from send queue`}
+                          >
+                            ✕
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
             <div className="flex-grow overflow-y-auto p-4 custom-scrollbar space-y-4 bg-gray-900/20">
                {sortedResults.length === 0 && !isProcessing ? (
                   <div className="flex flex-col items-center justify-center h-full text-gray-500 opacity-60">
@@ -1000,10 +1234,20 @@ const EmailSorter: React.FC<EmailSorterProps> = ({ showToast, onSendToEmailSende
                                     {getCountryFlag(group.country)}
                                  </span>
                                  <div>
-                                    <h3 className="font-bold text-white text-sm flex items-center gap-1.5">
-                                      {group.country}
-                                    </h3>
-                                    <span className="text-xs text-gray-400">{group.emails.length} emails</span>
+                                    <label className="inline-flex items-center gap-1.5 cursor-pointer">
+                                      <input
+                                        type="checkbox"
+                                        checked={selectedCountryCategories.includes(group.country)}
+                                        onChange={() => handleToggleCountryCategory(group.country)}
+                                        className="rounded border-gray-600 bg-gray-900 text-blue-500 focus:ring-0 w-3.5 h-3.5"
+                                      />
+                                      <h3 className="font-bold text-white text-sm flex items-center gap-1.5">
+                                        {group.country}
+                                      </h3>
+                                    </label>
+                                    <div className="text-[11px] text-gray-400">
+                                      {group.emails.length.toLocaleString()} emails • {selectedCountryCategories.includes(group.country) ? '✓ In Queue' : 'Excluded from queue'}
+                                    </div>
                                  </div>
                               </div>
                               <div className="flex items-center gap-1.5">
