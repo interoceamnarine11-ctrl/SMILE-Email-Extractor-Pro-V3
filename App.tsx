@@ -665,6 +665,45 @@ const App: React.FC = () => {
   };
 
   const [validatorInitialEmails, setValidatorInitialEmails] = useState<string[]>([]);
+  const [mxSorterInitialTargets, setMxSorterInitialTargets] = useState<string[]>([]);
+  const [countrySorterInitialEmails, setCountrySorterInitialEmails] = useState<string[]>([]);
+  const [analyzerInitialEmails, setAnalyzerInitialEmails] = useState<string[]>([]);
+
+  const handleNavigateWithPayload = useCallback((targetTab: TabKey, payload?: { emails?: string[]; leads?: ExtractedEmail[] }) => {
+    if (payload?.leads && payload.leads.length > 0) {
+      if (targetTab === 'email-sender') {
+        handleTransferToEmailSender(payload.leads);
+        return;
+      }
+    }
+    if (payload?.emails && payload.emails.length > 0) {
+      const uniqueEmails = Array.from(new Set(payload.emails.map(e => e.trim()).filter(Boolean)));
+      if (targetTab === 'email-sender') {
+        const generatedLeads: ExtractedEmail[] = uniqueEmails.map(e => {
+          const domain = e.includes('@') ? e.split('@')[1] : '';
+          return {
+            email: e,
+            domain,
+            sourceUrl: domain ? `https://${domain}` : '',
+            companyName: domain ? domain.split('.')[0].toUpperCase() : 'Company Contact',
+            country: country || 'N/A',
+            isValid: true
+          };
+        });
+        handleTransferToEmailSender(generatedLeads);
+        return;
+      } else if (targetTab === 'validator') {
+        setValidatorInitialEmails(uniqueEmails);
+      } else if (targetTab === 'mx-sorter') {
+        setMxSorterInitialTargets(uniqueEmails);
+      } else if (targetTab === 'sorter') {
+        setCountrySorterInitialEmails(uniqueEmails);
+      } else if (targetTab === 'analyzer') {
+        setAnalyzerInitialEmails(uniqueEmails);
+      }
+    }
+    setActiveTab(targetTab);
+  }, [country, handleTransferToEmailSender]);
 
   const handleSendToValidator = (customList?: string[]) => {
     const list = customList && customList.length > 0 ? customList : results.map(r => r.email).filter(Boolean);
@@ -697,21 +736,38 @@ const App: React.FC = () => {
               return (
                 <EmailSorter 
                   showToast={showToast} 
-                  onSendToEmailSender={handleTransferToEmailSender} 
+                  onSendToEmailSender={handleTransferToEmailSender}
+                  onNavigateTab={(tab, emails) => handleNavigateWithPayload(tab as TabKey, { emails })}
+                  initialEmails={countrySorterInitialEmails}
                 />
               );
           case 'analyzer':
-              return <EmailAnalyzer showToast={showToast} />;
+              return (
+                <EmailAnalyzer 
+                  showToast={showToast}
+                  onSendToEmailSender={handleTransferToEmailSender}
+                  onNavigateTab={(tab, emails) => handleNavigateWithPayload(tab as TabKey, { emails })}
+                  initialEmails={analyzerInitialEmails}
+                />
+              );
           case 'validator':
               return (
                 <EmailValidator 
                   showToast={showToast} 
                   initialEmails={validatorInitialEmails.length > 0 ? validatorInitialEmails : results.map(r => r.email).filter(Boolean)} 
                   onSendToEmailSender={handleTransferToEmailSender}
+                  onNavigateTab={(tab, emails) => handleNavigateWithPayload(tab as TabKey, { emails })}
                 />
               );
           case 'mx-sorter':
-              return <MXSorter showToast={showToast} />;
+              return (
+                <MXSorter 
+                  showToast={showToast}
+                  onSendToEmailSender={handleTransferToEmailSender}
+                  onNavigateTab={(tab, emails) => handleNavigateWithPayload(tab as TabKey, { emails })}
+                  initialTargets={mxSorterInitialTargets}
+                />
+              );
           case 'supply-chain':
               return <SupplyChainExtractor showToast={showToast} />;
           case 'bulk-url-opener':

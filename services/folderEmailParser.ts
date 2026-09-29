@@ -1,5 +1,6 @@
 import { extractEmailsFromText } from './dorkHelper';
 import type { ExtractedEmail } from '../types';
+import * as XLSX from 'xlsx';
 
 /**
  * Reusable Folder & File Email Parsing Engine
@@ -36,25 +37,31 @@ export function extractEmailsFromRawText(text: string): string[] {
  * Reads a single file asynchronously and returns extracted emails.
  */
 export async function readEmailsFromFile(file: File): Promise<string[]> {
-  return new Promise((resolve) => {
-    // If file is very large or binary (e.g. over 20MB), skip to avoid freezing
-    if (file.size > 25 * 1024 * 1024) {
-      resolve([]);
-      return;
+  try {
+    // If file is very large (e.g. over 30MB), skip or yield
+    if (file.size > 30 * 1024 * 1024) {
+      return [];
     }
 
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      const content = e.target?.result;
-      if (typeof content === 'string') {
-        resolve(extractEmailsFromRawText(content));
-      } else {
-        resolve([]);
+    const ext = file.name.split('.').pop()?.toLowerCase() || '';
+
+    if (ext === 'xlsx' || ext === 'xls') {
+      const buffer = await file.arrayBuffer();
+      const workbook = XLSX.read(buffer, { type: 'array' });
+      let sheetText = '';
+      for (const name of workbook.SheetNames) {
+        const sheet = workbook.Sheets[name];
+        sheetText += XLSX.utils.sheet_to_csv(sheet) + '\n';
       }
-    };
-    reader.onerror = () => resolve([]);
-    reader.readAsText(file);
-  });
+      return extractEmailsFromRawText(sheetText);
+    }
+
+    const text = await file.text();
+    return extractEmailsFromRawText(text);
+  } catch (err) {
+    console.warn(`[readEmailsFromFile] Error parsing ${file.name}:`, err);
+    return [];
+  }
 }
 
 /**

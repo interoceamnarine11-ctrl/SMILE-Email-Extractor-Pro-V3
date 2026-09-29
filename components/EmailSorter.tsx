@@ -1,5 +1,4 @@
-
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { identifyCountriesForDomains, identifyUnknownDomainsDeeply, type CountryResolutionItem } from '../services/geminiService';
 import { classifyCountryOffline } from '../services/offlineClassifier';
 import { extractEmailsFromFile } from '../services/fileService';
@@ -33,6 +32,8 @@ import { Send } from 'lucide-react';
 interface EmailSorterProps {
   showToast: (msg: string) => void;
   onSendToEmailSender?: (leads: ExtractedEmail[]) => void;
+  onNavigateTab?: (tab: string, emails?: string[]) => void;
+  initialEmails?: string[];
 }
 
 interface SortedGroup {
@@ -40,7 +41,7 @@ interface SortedGroup {
   emails: string[];
 }
 
-const EmailSorter: React.FC<EmailSorterProps> = ({ showToast, onSendToEmailSender }) => {
+const EmailSorter: React.FC<EmailSorterProps> = ({ showToast, onSendToEmailSender, onNavigateTab, initialEmails = [] }) => {
   const [inputText, setInputText] = useState('');
   const [sortedResults, setSortedResults] = useState<SortedGroup[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
@@ -73,6 +74,27 @@ const EmailSorter: React.FC<EmailSorterProps> = ({ showToast, onSendToEmailSende
   const rawFileContent = useRef<string | null>(null);
   const controlRef = useRef({ shouldStop: false, isPaused: false });
 
+  // Auto-populate when initialEmails from another tab are passed
+  useEffect(() => {
+    if (initialEmails && initialEmails.length > 0 && !inputText.trim() && sortedResults.length === 0) {
+      if (initialEmails.length > 800) {
+        rawFileContent.current = initialEmails.join('\n');
+        setLargeFileMode(true);
+        setInputText(
+          `[TRANSFERRED CONTACTS: ${initialEmails.length.toLocaleString()} emails]\n` +
+          `Preview (first 10 emails):\n${initialEmails.slice(0, 10).join('\n')}\n` +
+          `...plus ${(initialEmails.length - 10).toLocaleString()} more emails stored safely in memory.\n\n` +
+          `Ready to sort by country!`
+        );
+      } else {
+        rawFileContent.current = null;
+        setLargeFileMode(false);
+        setInputText(initialEmails.join('\n'));
+      }
+      showToast(`Loaded ${initialEmails.length} emails from previous tab into Country Sorter!`);
+    }
+  }, [initialEmails]);
+
   const handleFolderChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const files = event.target.files;
     if (files && files.length > 0) {
@@ -86,16 +108,16 @@ const EmailSorter: React.FC<EmailSorterProps> = ({ showToast, onSendToEmailSende
         if (emails.length === 0) {
           showToast("No email addresses found across files in selected folder.");
         } else {
-          const isLarge = emails.length > 5000;
+          const isLarge = emails.length > 800;
           setLargeFileMode(isLarge);
           if (isLarge) {
             rawFileContent.current = emails.join('\n');
-            setInputText(`[FOLDER EXTRACTED]\nFiles Scanned: ${fileCount}\nTotal Unique Emails Found: ${emails.length}\n\nContent hidden for performance. Ready to sort.`);
+            setInputText(`[FOLDER EXTRACTED]\nFiles Scanned: ${fileCount}\nTotal Unique Emails Found: ${emails.length.toLocaleString()}\n\nPreview (first 10 emails):\n${emails.slice(0, 10).join('\n')}\n...plus ${(emails.length - 10).toLocaleString()} more emails stored safely in memory.\n\nReady to sort!`);
           } else {
             rawFileContent.current = null;
             setInputText(emails.join('\n'));
           }
-          showToast(`Extracted ${emails.length} emails from ${fileCount} files in folder!`);
+          showToast(`Extracted ${emails.length.toLocaleString()} emails from ${fileCount} files in folder!`);
         }
       } catch (err: any) {
         showToast(err.message || "Error reading folder files.");
@@ -111,24 +133,32 @@ const EmailSorter: React.FC<EmailSorterProps> = ({ showToast, onSendToEmailSende
     const file = event.target.files?.[0];
     if (file) {
       setIsProcessing(true);
-      setStatusText("Reading file...");
+      setStatusText(`Reading ${file.name}...`);
       try {
-        const emails = await extractEmailsFromFile(file);
+        const emails = await extractEmailsFromFile(file, {
+          onProgress: (stats) => setStatusText(`Reading ${file.name} (${stats.percent}%)...`)
+        });
         if (emails.length === 0) {
           showToast("No emails found in the file.");
         } else {
-          // 1MB threshold for "Large File Mode"
-          const isLarge = file.size > 1024 * 1024 || emails.length > 5000; 
+          const isLarge = file.size > 100 * 1024 || emails.length > 800; 
           setLargeFileMode(isLarge);
 
           if (isLarge) {
-              rawFileContent.current = emails.join('\n');
-              setInputText(`[LARGE FILE LOADED]\nName: ${file.name}\nEmails found: ${emails.length}\nSize: ${(file.size / 1024 / 1024).toFixed(2)} MB\n\nContent hidden for performance. Ready to process.`);
+            rawFileContent.current = emails.join('\n');
+            setInputText(
+              `[FILE LOADED: ${file.name}]\n` +
+              `Total emails found: ${emails.length.toLocaleString()}\n` +
+              `Size: ${(file.size / 1024).toFixed(1)} KB\n\n` +
+              `Preview (first 10 emails):\n${emails.slice(0, 10).join('\n')}\n` +
+              `...plus ${(emails.length - 10).toLocaleString()} more emails stored safely in memory.\n\n` +
+              `Ready to sort by country!`
+            );
           } else {
-              rawFileContent.current = null;
-              setInputText(emails.join('\n'));
+            rawFileContent.current = null;
+            setInputText(emails.join('\n'));
           }
-          showToast(`${emails.length} emails loaded successfully.`);
+          showToast(`${emails.length.toLocaleString()} emails loaded successfully.`);
         }
       } catch (err: any) {
         showToast(err.message || "Error loading file.");
@@ -859,6 +889,36 @@ const EmailSorter: React.FC<EmailSorterProps> = ({ showToast, onSendToEmailSende
                           Send Clean Leads ({sortedResults.reduce((acc, g) => acc + g.emails.length, 0)})
                         </button>
                       )}
+                      {onNavigateTab && (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const allEmails: string[] = [];
+                              sortedResults.forEach(g => allEmails.push(...g.emails));
+                              onNavigateTab('mx-sorter', allEmails);
+                              showToast(`Moved ${allEmails.length.toLocaleString()} leads to MX Sorter!`);
+                            }}
+                            className="flex items-center px-3 py-2 text-xs font-bold rounded-md bg-indigo-900/70 hover:bg-indigo-800 text-indigo-200 border border-indigo-600/50 shadow transition"
+                            title="Send all clean leads to MX Mailer Sorter"
+                          >
+                            <span>To MX Sorter</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const allEmails: string[] = [];
+                              sortedResults.forEach(g => allEmails.push(...g.emails));
+                              onNavigateTab('validator', allEmails);
+                              showToast(`Moved ${allEmails.length.toLocaleString()} leads to Email Validator!`);
+                            }}
+                            className="flex items-center px-3 py-2 text-xs font-bold rounded-md bg-emerald-900/70 hover:bg-emerald-800 text-emerald-200 border border-emerald-600/50 shadow transition"
+                            title="Send all clean leads to Email Validator"
+                          >
+                            <span>To Validator</span>
+                          </button>
+                        </>
+                      )}
                       <button 
                          onClick={handleExportZip}
                          className="flex items-center px-3 py-2 text-xs font-bold uppercase tracking-wider rounded-md bg-green-600/80 hover:bg-green-600 text-white transition-all duration-200 shadow-lg"
@@ -974,6 +1034,32 @@ const EmailSorter: React.FC<EmailSorterProps> = ({ showToast, onSendToEmailSende
                                    >
                                       <Send className="w-3 h-3" /> Send
                                    </button>
+                                 )}
+                                 {onNavigateTab && (
+                                   <>
+                                     <button
+                                       type="button"
+                                       onClick={() => {
+                                         onNavigateTab('mx-sorter', group.emails);
+                                         showToast(`Moved ${group.country} leads to MX Sorter!`);
+                                       }}
+                                       className="px-1.5 py-1 text-xs font-semibold bg-gray-800 hover:bg-indigo-900/60 text-indigo-300 rounded border border-gray-700 transition"
+                                       title={`Transfer ${group.country} leads to MX Sorter`}
+                                     >
+                                       MX
+                                     </button>
+                                     <button
+                                       type="button"
+                                       onClick={() => {
+                                         onNavigateTab('validator', group.emails);
+                                         showToast(`Moved ${group.country} leads to Email Validator!`);
+                                       }}
+                                       className="px-1.5 py-1 text-xs font-semibold bg-gray-800 hover:bg-emerald-900/60 text-emerald-300 rounded border border-gray-700 transition"
+                                       title={`Transfer ${group.country} leads to Email Validator`}
+                                     >
+                                       Val
+                                     </button>
+                                   </>
                                  )}
                                  <button 
                                     onClick={() => handleExportGroup(group)}

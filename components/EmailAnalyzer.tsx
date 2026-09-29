@@ -1,5 +1,5 @@
-import React, { useState, useRef, useMemo } from 'react';
-import type { CompanyIntel, IndustryGroupIntel, ProductGroupIntel } from '../types';
+import React, { useState, useRef, useMemo, useEffect } from 'react';
+import type { CompanyIntel, IndustryGroupIntel, ProductGroupIntel, ExtractedEmail } from '../types';
 import { fetchDomainIntelligence } from '../services/geminiService';
 import { classifyIndustryOffline, classifyCountryOffline } from '../services/offlineClassifier';
 import { extractEmailsFromFile } from '../services/fileService';
@@ -30,12 +30,16 @@ import JSZip from 'jszip';
 import * as XLSX from 'xlsx';
 import { isPublicDomain } from '../constants/domains';
 import { useActiveWakeLock } from '../hooks/useWakeLock';
+import { Send } from 'lucide-react';
 
 interface EmailAnalyzerProps {
   showToast: (msg: string) => void;
+  onSendToEmailSender?: (leads: ExtractedEmail[]) => void;
+  onNavigateTab?: (tab: string, emails?: string[]) => void;
+  initialEmails?: string[];
 }
 
-const EmailAnalyzer: React.FC<EmailAnalyzerProps> = ({ showToast }) => {
+const EmailAnalyzer: React.FC<EmailAnalyzerProps> = ({ showToast, onSendToEmailSender, onNavigateTab, initialEmails = [] }) => {
   const [inputText, setInputText] = useState('');
   const [companies, setCompanies] = useState<CompanyIntel[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
@@ -89,26 +93,107 @@ const EmailAnalyzer: React.FC<EmailAnalyzerProps> = ({ showToast }) => {
     }
   };
 
+  // Auto-populate when initialEmails from another tab are passed
+  useEffect(() => {
+    if (initialEmails && initialEmails.length > 0 && !inputText.trim() && companies.length === 0) {
+      if (initialEmails.length > 800) {
+        rawFileContent.current = initialEmails.join('\n');
+        setLargeFileMode(true);
+        setInputText(
+          `[TRANSFERRED CONTACTS: ${initialEmails.length.toLocaleString()} emails]\n` +
+          `Preview (first 10 items):\n${initialEmails.slice(0, 10).join('\n')}\n` +
+          `...plus ${(initialEmails.length - 10).toLocaleString()} more items stored in memory.\n\n` +
+          `Ready to analyze industry & company intelligence!`
+        );
+      } else {
+        rawFileContent.current = null;
+        setLargeFileMode(false);
+        setInputText(initialEmails.join('\n'));
+      }
+      showToast(`Loaded ${initialEmails.length} emails into Industrial Analyzer!`);
+    }
+  }, [initialEmails]);
+
+  // Send all analyzed leads to compose
+  const handleSendAllToCompose = () => {
+    if (!onSendToEmailSender) {
+      showToast("Email Sender is not connected.");
+      return;
+    }
+    const leads: ExtractedEmail[] = [];
+    companies.forEach(comp => {
+      comp.emails.forEach(email => {
+        leads.push({
+          email,
+          domain: comp.domain,
+          sourceUrl: `https://${comp.domain}`,
+          companyName: comp.companyName,
+          country: comp.country || 'N/A',
+          isValid: true
+        });
+      });
+    });
+
+    if (leads.length === 0) {
+      showToast("No analyzed emails found to send to compose.");
+      return;
+    }
+    onSendToEmailSender(leads);
+    showToast(`Transferred ${leads.length.toLocaleString()} analyzed leads to Email Compose!`);
+  };
+
+  // Send specific company's leads to compose
+  const handleSendCompanyToCompose = (company: CompanyIntel) => {
+    if (!onSendToEmailSender) {
+      showToast("Email Sender is not connected.");
+      return;
+    }
+    const leads: ExtractedEmail[] = company.emails.map(email => ({
+      email,
+      domain: company.domain,
+      sourceUrl: `https://${company.domain}`,
+      companyName: company.companyName,
+      country: company.country || 'N/A',
+      isValid: true
+    }));
+
+    if (leads.length === 0) {
+      showToast(`No emails found for ${company.companyName}.`);
+      return;
+    }
+    onSendToEmailSender(leads);
+    showToast(`Transferred ${leads.length} leads for ${company.companyName} to Compose!`);
+  };
+
   // Handle file reading from upload input
   const handleFile = async (file: File) => {
     setIsProcessing(true);
-    setStatusText("Reading file...");
+    setStatusText(`Reading ${file.name}...`);
     try {
-      const emails = await extractEmailsFromFile(file);
+      const emails = await extractEmailsFromFile(file, {
+        onProgress: (stats) => setStatusText(`Reading ${file.name} (${stats.percent}%)...`)
+      });
       if (emails.length === 0) {
         showToast("No emails found in the file.");
       } else {
-        const isLarge = file.size > 1024 * 1024 || emails.length > 5000;
+        const isLarge = file.size > 100 * 1024 || emails.length > 800;
         setLargeFileMode(isLarge);
 
         if (isLarge) {
           rawFileContent.current = emails.join('\n');
-          setInputText(`[LARGE FILE LOADED]\nName: ${file.name}\nEmails found: ${emails.length}\nSize: ${(file.size / 1024 / 1024).toFixed(2)} MB\n\nContent hidden for performance. Ready to analyze.`);
+          setInputText(
+            `[FILE LOADED: ${file.name}]\n` +
+            `Emails found: ${emails.length.toLocaleString()}\n` +
+            `Size: ${(file.size / 1024).toFixed(1)} KB\n\n` +
+            `Preview (first 10 items):\n${emails.slice(0, 10).join('\n')}\n` +
+            `...plus ${(emails.length - 10).toLocaleString()} more items stored safely in memory.\n\n` +
+            `Ready to analyze!`
+          );
         } else {
           rawFileContent.current = null;
           setInputText(emails.join('\n'));
         }
-        showToast(`${emails.length} emails loaded successfully.`);
+        showToast(`${emails.length.toLocaleString()} emails loaded successfully.`);
       }
     } catch (err: any) {
       showToast(err.message || "Error loading file.");
@@ -1056,6 +1141,46 @@ const EmailAnalyzer: React.FC<EmailAnalyzerProps> = ({ showToast }) => {
                   </button>
                 </div>
 
+                {/* Send to Compose & Tab Transfer Actions */}
+                {onSendToEmailSender && (
+                  <button
+                    onClick={handleSendAllToCompose}
+                    className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-lg bg-blue-600 hover:bg-blue-500 text-white transition shadow border border-blue-400/50"
+                    title="Send all analyzed company leads to Email Compose"
+                  >
+                    <Send className="w-3.5 h-3.5" />
+                    <span>Send to Compose ({companies.reduce((a, c) => a + c.emails.length, 0)})</span>
+                  </button>
+                )}
+                {onNavigateTab && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const allEmails = Array.from(new Set(companies.flatMap(c => c.emails)));
+                        onNavigateTab('mx-sorter', allEmails);
+                        showToast(`Moved ${allEmails.length.toLocaleString()} leads to MX Sorter!`);
+                      }}
+                      className="flex items-center px-2.5 py-1.5 text-xs font-semibold rounded-lg bg-indigo-950/70 hover:bg-indigo-900/90 text-indigo-300 border border-indigo-700/50 transition"
+                      title="Send leads to MX Mailer Sorter"
+                    >
+                      To MX
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const allEmails = Array.from(new Set(companies.flatMap(c => c.emails)));
+                        onNavigateTab('validator', allEmails);
+                        showToast(`Moved ${allEmails.length.toLocaleString()} leads to Email Validator!`);
+                      }}
+                      className="flex items-center px-2.5 py-1.5 text-xs font-semibold rounded-lg bg-emerald-950/70 hover:bg-emerald-900/90 text-emerald-300 border border-emerald-700/50 transition"
+                      title="Send leads to Email Validator"
+                    >
+                      To Val
+                    </button>
+                  </>
+                )}
+
                 {/* Export Excel (Multi-sheet with Product Categories) */}
                 <button
                   onClick={handleExportExcel}
@@ -1374,6 +1499,17 @@ const EmailAnalyzer: React.FC<EmailAnalyzerProps> = ({ showToast }) => {
                           )}
                           Re-check
                         </button>
+
+                        {onSendToEmailSender && (
+                          <button
+                            onClick={() => handleSendCompanyToCompose(comp)}
+                            className="px-2 py-1 bg-blue-600/80 hover:bg-blue-600 text-white rounded-lg text-xs font-semibold flex items-center gap-1 transition shadow-sm"
+                            title={`Send ${comp.companyName} leads to Email Compose`}
+                          >
+                            <Send className="w-3 h-3" />
+                            <span>Compose</span>
+                          </button>
+                        )}
 
                         <button
                           onClick={() => setSelectedCompanyForModal(comp)}

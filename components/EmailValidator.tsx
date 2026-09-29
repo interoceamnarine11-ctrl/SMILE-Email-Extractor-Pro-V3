@@ -27,6 +27,7 @@ interface EmailValidatorProps {
   showToast: (msg: string) => void;
   initialEmails?: string[];
   onSendToEmailSender?: (leads: ExtractedEmail[]) => void;
+  onNavigateTab?: (tab: string, emails?: string[]) => void;
 }
 
 export interface VerifiedEmail {
@@ -60,7 +61,7 @@ const ROLE_USERNAMES = new Set([
   'marketing', 'jobs', 'careers', 'hr', 'legal', 'compliance', 'security'
 ]);
 
-const EmailValidator: React.FC<EmailValidatorProps> = ({ showToast, initialEmails = [], onSendToEmailSender }) => {
+const EmailValidator: React.FC<EmailValidatorProps> = ({ showToast, initialEmails = [], onSendToEmailSender, onNavigateTab }) => {
   const [inputText, setInputText] = useState('');
   const [verifiedEmails, setVerifiedEmails] = useState<VerifiedEmail[]>([]);
   
@@ -102,20 +103,28 @@ const EmailValidator: React.FC<EmailValidatorProps> = ({ showToast, initialEmail
       setIsProcessing(true);
       setStatusText(`Scanning folder (${files.length} files)...`);
       try {
-        const { emails, fileCount } = await extractEmailsFromFiles(files);
+        const { emails, fileCount } = await extractEmailsFromFiles(files, (curr, total, name) => {
+          setStatusText(`Reading ${curr}/${total}: ${name}`);
+        });
         if (emails.length === 0) {
           showToast("No email addresses found across files in selected folder.");
         } else {
-          const isLarge = emails.length > 5000;
+          const isLarge = emails.length > 800;
           setLargeFileMode(isLarge);
           if (isLarge) {
             rawFileContent.current = emails.join('\n');
-            setInputText(`[FOLDER EXTRACTED]\nFiles Scanned: ${fileCount}\nTotal Emails: ${emails.length}\n\nContent hidden for performance. Ready to validate.`);
+            setInputText(
+              `[FOLDER EXTRACTED: ${fileCount} files]\n` +
+              `Total emails found: ${emails.length.toLocaleString()}\n\n` +
+              `Preview (first 10 emails):\n${emails.slice(0, 10).join('\n')}\n` +
+              `...plus ${(emails.length - 10).toLocaleString()} more emails stored safely in memory.\n\n` +
+              `Ready to validate!`
+            );
           } else {
             rawFileContent.current = null;
             setInputText(emails.join('\n'));
           }
-          showToast(`Extracted ${emails.length} emails from ${fileCount} files in folder!`);
+          showToast(`Extracted ${emails.length.toLocaleString()} emails from ${fileCount} files in folder!`);
         }
       } catch (err: any) {
         showToast(err.message || "Error reading folder.");
@@ -130,7 +139,20 @@ const EmailValidator: React.FC<EmailValidatorProps> = ({ showToast, initialEmail
   // Auto-populate when initialEmails from extractor are supplied and input is empty
   useEffect(() => {
     if (initialEmails && initialEmails.length > 0 && !inputText.trim() && verifiedEmails.length === 0) {
-      setInputText(initialEmails.join('\n'));
+      if (initialEmails.length > 800) {
+        rawFileContent.current = initialEmails.join('\n');
+        setLargeFileMode(true);
+        setInputText(
+          `[TRANSFERRED CONTACTS: ${initialEmails.length.toLocaleString()} emails]\n` +
+          `Preview (first 10 emails):\n${initialEmails.slice(0, 10).join('\n')}\n` +
+          `...plus ${(initialEmails.length - 10).toLocaleString()} more emails stored in memory.\n\n` +
+          `Ready to validate!`
+        );
+      } else {
+        rawFileContent.current = null;
+        setLargeFileMode(false);
+        setInputText(initialEmails.join('\n'));
+      }
     }
   }, [initialEmails]);
 
@@ -139,9 +161,15 @@ const EmailValidator: React.FC<EmailValidatorProps> = ({ showToast, initialEmail
       showToast("No extracted emails found from search.");
       return;
     }
-    setLargeFileMode(false);
-    rawFileContent.current = null;
-    setInputText(initialEmails.join('\n'));
+    if (initialEmails.length > 800) {
+      setLargeFileMode(true);
+      rawFileContent.current = initialEmails.join('\n');
+      setInputText(`[TRANSFERRED: ${initialEmails.length.toLocaleString()} emails]\nReady to validate.`);
+    } else {
+      setLargeFileMode(false);
+      rawFileContent.current = null;
+      setInputText(initialEmails.join('\n'));
+    }
     showToast(`Loaded ${initialEmails.length} emails from Extractor!`);
   };
 
@@ -149,27 +177,38 @@ const EmailValidator: React.FC<EmailValidatorProps> = ({ showToast, initialEmail
     const file = event.target.files?.[0];
     if (file) {
       setIsProcessing(true);
+      setStatusText(`Reading ${file.name}...`);
       try {
-        const emails = await extractEmailsFromFile(file);
+        const emails = await extractEmailsFromFile(file, {
+          onProgress: (stats) => setStatusText(`Reading ${file.name} (${stats.percent}%)...`)
+        });
         if (emails.length === 0) {
           showToast("No emails found in the file.");
         } else {
-          const isLarge = file.size > 1024 * 1024 || emails.length > 5000;
+          const isLarge = file.size > 100 * 1024 || emails.length > 800;
           setLargeFileMode(isLarge);
 
           if (isLarge) {
             rawFileContent.current = emails.join('\n');
-            setInputText(`[LARGE FILE LOADED]\nName: ${file.name}\nEmails found: ${emails.length}\nSize: ${(file.size / 1024 / 1024).toFixed(2)} MB\n\nContent hidden for performance. Ready to process.`);
+            setInputText(
+              `[FILE LOADED: ${file.name}]\n` +
+              `Total emails found: ${emails.length.toLocaleString()}\n` +
+              `Size: ${(file.size / 1024).toFixed(1)} KB\n\n` +
+              `Preview (first 10 emails):\n${emails.slice(0, 10).join('\n')}\n` +
+              `...plus ${(emails.length - 10).toLocaleString()} more emails stored safely in memory.\n\n` +
+              `Ready to validate!`
+            );
           } else {
             rawFileContent.current = null;
             setInputText(emails.join('\n'));
           }
-          showToast(`${emails.length} emails loaded successfully.`);
+          showToast(`${emails.length.toLocaleString()} emails loaded successfully.`);
         }
       } catch (err: any) {
         showToast(err.message || "Error loading file.");
       } finally {
         setIsProcessing(false);
+        setStatusText('');
         if (fileInputRef.current) fileInputRef.current.value = '';
       }
     }
@@ -1047,6 +1086,42 @@ const EmailValidator: React.FC<EmailValidatorProps> = ({ showToast, initialEmail
                     <Send className="w-3.5 h-3.5 mr-1 text-white" />
                     Send Clean Leads ({cleanVerifiedList.filter(e => e.status === 'Deliverable').length})
                   </button>
+                )}
+                {onNavigateTab && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const cleanEmails = cleanVerifiedList.filter(e => e.status === 'Deliverable' || e.status === 'Risky').map(e => e.email);
+                        if (cleanEmails.length === 0) {
+                          showToast('No deliverable emails found to transfer.');
+                          return;
+                        }
+                        onNavigateTab('mx-sorter', cleanEmails);
+                        showToast(`Moved ${cleanEmails.length.toLocaleString()} deliverable leads to MX Sorter!`);
+                      }}
+                      className="flex items-center px-3 py-1.5 bg-indigo-900/70 hover:bg-indigo-800 text-indigo-200 border border-indigo-600/50 rounded-md text-xs font-bold transition-all shadow-sm"
+                      title="Transfer deliverable leads to MX Mailer Sorter"
+                    >
+                      <span>To MX Sorter</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const cleanEmails = cleanVerifiedList.filter(e => e.status === 'Deliverable' || e.status === 'Risky').map(e => e.email);
+                        if (cleanEmails.length === 0) {
+                          showToast('No deliverable emails found to transfer.');
+                          return;
+                        }
+                        onNavigateTab('sorter', cleanEmails);
+                        showToast(`Moved ${cleanEmails.length.toLocaleString()} deliverable leads to Country Sorter!`);
+                      }}
+                      className="flex items-center px-3 py-1.5 bg-purple-950/70 hover:bg-purple-800 text-purple-200 border border-purple-600/50 rounded-md text-xs font-bold transition-all shadow-sm"
+                      title="Transfer deliverable leads to Country Sorter"
+                    >
+                      <span>To Country Sort</span>
+                    </button>
+                  </>
                 )}
                 <button
                   onClick={handleCopyCleanList}

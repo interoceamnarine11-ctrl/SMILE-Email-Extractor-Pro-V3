@@ -1,4 +1,4 @@
-import React, { useState, useRef, useMemo } from 'react';
+import React, { useState, useRef, useMemo, useEffect } from 'react';
 import DocumentArrowUpIcon from './icons/DocumentArrowUpIcon';
 import FolderOpenIcon from './icons/FolderOpenIcon';
 import ArrowPathIcon from './icons/ArrowPathIcon';
@@ -10,8 +10,11 @@ import ClipboardIcon from './icons/ClipboardIcon';
 import CheckIcon from './icons/CheckIcon';
 import XCircleIcon from './icons/XCircleIcon';
 import MagnifyingGlassIcon from './icons/MagnifyingGlassIcon';
+import GlobeAltIcon from './icons/GlobeAltIcon';
 import JSZip from 'jszip';
 import * as XLSX from 'xlsx';
+import { Send } from 'lucide-react';
+import type { ExtractedEmail } from '../types';
 import { useActiveWakeLock } from '../hooks/useWakeLock';
 import {
   extractTargetsForMXFromFile,
@@ -30,6 +33,9 @@ import {
 
 interface MXSorterProps {
   showToast: (msg: string) => void;
+  onSendToEmailSender?: (leads: ExtractedEmail[]) => void;
+  onNavigateTab?: (tab: string, emails?: string[]) => void;
+  initialTargets?: string[];
 }
 
 interface MXGroup {
@@ -82,7 +88,7 @@ const DEFAULT_COLOR = {
   badge: 'bg-gray-800 text-gray-300 border-gray-700'
 };
 
-const MXSorter: React.FC<MXSorterProps> = ({ showToast }) => {
+const MXSorter: React.FC<MXSorterProps> = ({ showToast, onSendToEmailSender, onNavigateTab, initialTargets = [] }) => {
   const [inputText, setInputText] = useState('');
   const [results, setResults] = useState<MXGroup[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
@@ -109,10 +115,94 @@ const MXSorter: React.FC<MXSorterProps> = ({ showToast }) => {
   const [isDragging, setIsDragging] = useState(false);
   const rawFileContent = useRef<string | null>(null);
 
-  // Results Filter State
+  // Results Filter & Mailer Provider Compose State
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
+  const [selectedComposeProvider, setSelectedComposeProvider] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
+
+  // Auto-populate when initialTargets from another tab are passed
+  useEffect(() => {
+    if (initialTargets && initialTargets.length > 0 && !inputText.trim() && results.length === 0) {
+      if (initialTargets.length > 600) {
+        rawFileContent.current = initialTargets.join('\n');
+        setIsLargeFileMode(true);
+        setInputText(
+          `[TRANSFERRED TARGETS: ${initialTargets.length.toLocaleString()} items]\n` +
+          `Preview (first 10 items):\n${initialTargets.slice(0, 10).join('\n')}\n` +
+          `...plus ${(initialTargets.length - 10).toLocaleString()} more items stored in memory.\n\n` +
+          `Ready to analyze MX records!`
+        );
+      } else {
+        rawFileContent.current = null;
+        setIsLargeFileMode(false);
+        setInputText(initialTargets.join('\n'));
+      }
+      showToast(`Loaded ${initialTargets.length} targets from previous tab into MX Sorter!`);
+    }
+  }, [initialTargets]);
+
+  // Send selected provider leads or all clean leads directly to Compose (EmailSender)
+  const handleSendToCompose = (
+    targets: Array<{ target: string; domain?: string; provider?: string } | string>,
+    providerName?: string
+  ) => {
+    if (!onSendToEmailSender) {
+      showToast("Email Sender is not connected.");
+      return;
+    }
+
+    const leads: ExtractedEmail[] = [];
+    targets.forEach(item => {
+      const email = typeof item === 'string' ? item : item.target;
+      if (!email || !email.includes('@')) return;
+      const domain = typeof item === 'object' && item.domain ? item.domain : email.split('@')[1];
+      const provider = typeof item === 'object' && item.provider ? item.provider : providerName;
+
+      leads.push({
+        email: email.trim().toLowerCase(),
+        domain,
+        sourceUrl: `https://${domain}`,
+        companyName: domain ? domain.split('.')[0].toUpperCase() : 'Company Contact',
+        country: 'N/A',
+        isValid: true,
+        mxStatus: 'valid',
+        mxProvider: provider
+      });
+    });
+
+    if (leads.length === 0) {
+      showToast("No valid email addresses found to send to compose.");
+      return;
+    }
+
+    onSendToEmailSender(leads);
+    showToast(`Transferred ${leads.length.toLocaleString()} ${providerName ? `(${providerName})` : ''} leads directly to Email Compose!`);
+  };
+
+  // Cross-tab transfer to Validator, Country Sorter, etc.
+  const handleTransferToTab = (targetTab: string, targets: Array<{ target: string } | string>, label?: string) => {
+    if (!onNavigateTab) {
+      showToast("Tab navigation is not available.");
+      return;
+    }
+    const emails: string[] = [];
+    targets.forEach(item => {
+      const email = typeof item === 'string' ? item : item.target;
+      if (email && email.includes('@')) {
+        emails.push(email.trim().toLowerCase());
+      }
+    });
+
+    if (emails.length === 0) {
+      showToast("No valid email addresses found to transfer.");
+      return;
+    }
+
+    onNavigateTab(targetTab, emails);
+    const destName = targetTab === 'validator' ? 'Email Validator' : targetTab === 'sorter' ? 'Country Sorter' : 'Composer';
+    showToast(`Moved ${emails.length.toLocaleString()} ${label ? `(${label})` : ''} leads to ${destName}!`);
+  };
 
   // Keep screen awake while resolving MX DNS queries, sorting, or streaming folder extraction
   useActiveWakeLock(isProcessing || isScanningFolder, 'MX Sorter: Active Processing & DNS Resolution');
@@ -169,7 +259,9 @@ const MXSorter: React.FC<MXSorterProps> = ({ showToast }) => {
     setIsReadingFile(true);
     setStatusText(`Reading ${file.name}...`);
     try {
-      const extracted = await extractTargetsForMXFromFile(file);
+      const extracted = await extractTargetsForMXFromFile(file, (stats) => {
+        setStatusText(stats.status || `Reading ${file.name} (${stats.percent}%)...`);
+      });
       if (extracted.items.length === 0) {
         showToast(`No email addresses or domain names found in ${file.name}.`);
         return;
@@ -178,7 +270,7 @@ const MXSorter: React.FC<MXSorterProps> = ({ showToast }) => {
       setUploadedFile(extracted);
       setUploadedFolder(null);
 
-      const isLarge = file.size > 1024 * 1024 || extracted.items.length > 3000;
+      const isLarge = file.size > 80 * 1024 || extracted.items.length > 400;
       setIsLargeFileMode(isLarge);
 
       if (isLarge) {
@@ -248,7 +340,7 @@ const MXSorter: React.FC<MXSorterProps> = ({ showToast }) => {
       setUploadedFolder(result);
       setUploadedFile(null);
 
-      const isLarge = result.totalSize > 1024 * 1024 || result.items.length > 3000;
+      const isLarge = result.totalSize > 150 * 1024 || result.items.length > 500;
       setIsLargeFileMode(isLarge);
 
       if (isLarge) {
@@ -1327,6 +1419,130 @@ const MXSorter: React.FC<MXSorterProps> = ({ showToast }) => {
             </div>
           </div>
 
+          {/* SELECT EMAIL SERVER PROVIDER & SEND TO COMPOSE / CROSS-TAB ACTIONS BANNER */}
+          {(cleanConsolidatedList.length > 0 || results.length > 0) && (
+            <div className="p-3.5 bg-gradient-to-r from-blue-950/80 via-indigo-950/70 to-slate-900 border-b border-blue-900/50 space-y-2.5">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="text-xs font-bold text-blue-300 flex items-center gap-1.5">
+                    <Send className="w-3.5 h-3.5 text-blue-400" />
+                    Select Email Server Provider:
+                  </span>
+                  <select
+                    value={selectedComposeProvider}
+                    onChange={(e) => setSelectedComposeProvider(e.target.value)}
+                    className="bg-slate-900 border border-blue-500/60 rounded-lg text-xs font-bold text-blue-200 px-3 py-1.5 focus:outline-none focus:ring-1 focus:ring-blue-400"
+                  >
+                    <option value="all">⭐ All Clean Business Leads ({cleanConsolidatedList.filter(c => c.target.includes('@')).length.toLocaleString()})</option>
+                    {results.map(g => {
+                      const count = g.emails.filter(e => e.includes('@')).length;
+                      return (
+                        <option key={g.provider} value={g.provider}>
+                          {g.provider} ({count.toLocaleString()} leads)
+                        </option>
+                      );
+                    })}
+                  </select>
+                </div>
+
+                {/* Primary Action Buttons */}
+                <div className="flex items-center gap-2 flex-wrap">
+                  {onSendToEmailSender && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (selectedComposeProvider === 'all') {
+                          handleSendToCompose(cleanConsolidatedList, 'All Clean Providers');
+                        } else {
+                          const grp = results.find(g => g.provider === selectedComposeProvider);
+                          if (grp) {
+                            handleSendToCompose(grp.emails, grp.provider);
+                          }
+                        }
+                      }}
+                      className="flex items-center px-3.5 py-1.5 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white rounded-lg text-xs font-bold transition-all shadow-md hover:shadow-blue-600/30 border border-blue-400/60"
+                      title="Send selected provider leads to Email Compose (Email Sender)"
+                    >
+                      <Send className="w-3.5 h-3.5 mr-1.5" />
+                      <span>Send to Compose ({
+                        selectedComposeProvider === 'all'
+                          ? cleanConsolidatedList.filter(c => c.target.includes('@')).length.toLocaleString()
+                          : (results.find(g => g.provider === selectedComposeProvider)?.emails.filter(e => e.includes('@')).length || 0).toLocaleString()
+                      })</span>
+                    </button>
+                  )}
+
+                  {onNavigateTab && (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const targets = selectedComposeProvider === 'all'
+                            ? cleanConsolidatedList.map(c => c.target)
+                            : (results.find(g => g.provider === selectedComposeProvider)?.emails || []);
+                          handleTransferToTab('validator', targets, selectedComposeProvider);
+                        }}
+                        className="flex items-center px-3 py-1.5 bg-emerald-950/70 hover:bg-emerald-800 text-emerald-300 hover:text-white rounded-lg text-xs font-bold transition border border-emerald-600/50"
+                        title="Transfer leads to Sorter & Validator tab"
+                      >
+                        <CheckIcon className="w-3.5 h-3.5 mr-1 text-emerald-400" />
+                        <span>To Validator</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const targets = selectedComposeProvider === 'all'
+                            ? cleanConsolidatedList.map(c => c.target)
+                            : (results.find(g => g.provider === selectedComposeProvider)?.emails || []);
+                          handleTransferToTab('sorter', targets, selectedComposeProvider);
+                        }}
+                        className="flex items-center px-3 py-1.5 bg-purple-950/70 hover:bg-purple-800 text-purple-300 hover:text-white rounded-lg text-xs font-bold transition border border-purple-600/50"
+                        title="Transfer leads to Country Sorter tab"
+                      >
+                        <GlobeAltIcon className="w-3.5 h-3.5 mr-1 text-purple-400" />
+                        <span>To Country Sort</span>
+                      </button>
+                    </>
+                  )}
+                </div>
+              </div>
+
+              {/* Quick Clickable Provider Chips */}
+              <div className="flex items-center gap-1.5 overflow-x-auto custom-scrollbar pt-1 pb-0.5">
+                <span className="text-[11px] text-gray-400 shrink-0 mr-1">Quick Select:</span>
+                <button
+                  type="button"
+                  onClick={() => setSelectedComposeProvider('all')}
+                  className={`text-[11px] px-2.5 py-0.5 rounded-full font-bold transition shrink-0 border ${
+                    selectedComposeProvider === 'all'
+                      ? 'bg-blue-600 text-white border-blue-400 shadow-sm'
+                      : 'bg-gray-900/80 text-gray-300 hover:text-white border-gray-700'
+                  }`}
+                >
+                  ⭐ All Clean ({cleanConsolidatedList.filter(c => c.target.includes('@')).length})
+                </button>
+                {results.slice(0, 8).map(g => {
+                  const count = g.emails.filter(e => e.includes('@')).length;
+                  return (
+                    <button
+                      key={g.provider}
+                      type="button"
+                      onClick={() => setSelectedComposeProvider(g.provider)}
+                      className={`text-[11px] px-2.5 py-0.5 rounded-full font-bold transition shrink-0 border ${
+                        selectedComposeProvider === g.provider
+                          ? 'bg-blue-600 text-white border-blue-400 shadow-sm'
+                          : 'bg-gray-900/80 text-gray-300 hover:text-white border-gray-700'
+                      }`}
+                    >
+                      {g.provider} ({count})
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
           {/* DYNAMIC SUB-BAR / EXPORT ACTIONS */}
           <div className="p-3 bg-gray-900/70 border-b border-gray-800 flex flex-wrap items-center justify-between gap-2.5">
             {/* SEARCH INPUT */}
@@ -1353,6 +1569,17 @@ const MXSorter: React.FC<MXSorterProps> = ({ showToast }) => {
             {/* EXPORT OPTIONS DEPENDING ON ACTIVE TAB */}
             {viewMode === 'clean-consolidated' && cleanConsolidatedList.length > 0 && (
               <div className="flex items-center flex-wrap gap-2">
+                {onSendToEmailSender && (
+                  <button
+                    type="button"
+                    onClick={() => handleSendToCompose(filteredCleanList, selectedCategory !== 'all' ? selectedCategory : 'Clean Consolidated')}
+                    className="flex items-center px-3 py-1.5 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white rounded-lg text-xs font-bold transition shadow-md border border-blue-400/50"
+                    title="Send clean business leads directly to Email Compose"
+                  >
+                    <Send className="w-3.5 h-3.5 mr-1.5 text-blue-200" />
+                    Send to Compose ({filteredCleanList.filter(c => c.type === 'email' || c.target.includes('@')).length})
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={handleExportCleanExcel}
@@ -1396,6 +1623,24 @@ const MXSorter: React.FC<MXSorterProps> = ({ showToast }) => {
 
             {viewMode === 'categorized' && results.length > 0 && (
               <div className="flex items-center flex-wrap gap-2">
+                {onSendToEmailSender && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (selectedCategory !== 'all') {
+                        const grp = results.find(g => g.provider === selectedCategory);
+                        if (grp) handleSendToCompose(grp.emails, grp.provider);
+                      } else {
+                        handleSendToCompose(cleanConsolidatedList, 'All Providers');
+                      }
+                    }}
+                    className="flex items-center px-3 py-1.5 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white rounded-lg text-xs font-bold transition shadow-md border border-blue-400/50"
+                    title="Send category leads to Email Compose"
+                  >
+                    <Send className="w-3.5 h-3.5 mr-1.5 text-blue-200" />
+                    Send to Compose ({selectedCategory !== 'all' ? (results.find(g => g.provider === selectedCategory)?.emails.filter(e => e.includes('@')).length || 0) : totalResultsCount})
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={handleExportExcel}
@@ -1579,7 +1824,17 @@ const MXSorter: React.FC<MXSorterProps> = ({ showToast }) => {
                                 {item.provider}
                               </span>
                             </div>
-                            <div className="col-span-1 text-right">
+                            <div className="col-span-1 text-right flex items-center justify-end gap-1">
+                              {onSendToEmailSender && item.target.includes('@') && (
+                                <button
+                                  type="button"
+                                  onClick={() => handleSendToCompose([item], item.provider)}
+                                  className="p-1 text-blue-400 hover:text-white rounded hover:bg-blue-600 transition"
+                                  title="Send lead directly to Compose"
+                                >
+                                  <Send className="w-3.5 h-3.5" />
+                                </button>
+                              )}
                               <button
                                 type="button"
                                 onClick={async () => {
@@ -1671,7 +1926,28 @@ const MXSorter: React.FC<MXSorterProps> = ({ showToast }) => {
                             </div>
 
                             {/* CARD ACTION BUTTONS */}
-                            <div className="flex items-center gap-1.5">
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              {onSendToEmailSender && (
+                                <button
+                                  type="button"
+                                  onClick={() => handleSendToCompose(group.emails, group.provider)}
+                                  className="flex items-center gap-1 px-2 py-1 rounded bg-blue-600 hover:bg-blue-500 text-white transition text-xs font-bold shadow-sm"
+                                  title={`Send ${group.provider} leads to Email Compose`}
+                                >
+                                  <Send className="w-3 h-3" />
+                                  <span>Compose</span>
+                                </button>
+                              )}
+                              {onNavigateTab && (
+                                <button
+                                  type="button"
+                                  onClick={() => handleTransferToTab('validator', group.emails, group.provider)}
+                                  className="px-1.5 py-1 rounded bg-gray-800 hover:bg-emerald-950/70 text-emerald-300 hover:text-white transition text-xs font-semibold border border-gray-700 hover:border-emerald-600/50"
+                                  title={`Send ${group.provider} leads to Email Validator`}
+                                >
+                                  Validate
+                                </button>
+                              )}
                               <button
                                 type="button"
                                 onClick={() => handleCopyCategory(group)}

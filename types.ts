@@ -30,6 +30,7 @@ export interface CompanyIntel {
   overview: string;
   businessModel?: string;
   headquarters?: string;
+  country?: string;
   title?: string;
   metaDescription?: string;
   searchSnippet?: string;
